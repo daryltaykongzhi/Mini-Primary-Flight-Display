@@ -3,6 +3,13 @@
 #include <Adafruit_BMP280.h>
 #include <Adafruit_HMC5883_U.h>
 
+HardwareSerial GPS(2);
+#define GPS_RX_PIN 16
+#define GPS_TX_PIN 17
+
+bool mpuOK = false;
+bool gpsOK = false;
+
 Adafruit_BMP280 bmp;
 bool bmpOK = false;
 float altitude = 0.0f;
@@ -71,38 +78,74 @@ float levelPitchOffset = 0.0f;
 unsigned long lastMicros = 0;
 unsigned long lastSerial = 0;
 
+// ============================================================
+// SENSOR CHECKS
+// ============================================================
 
+bool checkMPU()
+{
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x75);  // WHO_AM_I
 
+  if (Wire.endTransmission(false) != 0)
+    return false;
 
+  if (Wire.requestFrom(MPU_ADDR, (uint8_t)1, (uint8_t)true) != 1)
+    return false;
 
-//loading
+  uint8_t whoAmI = Wire.read();
+  return (whoAmI == 0x68 || whoAmI == 0x69 || whoAmI == 0x70);
+}
+
+bool checkGPS()
+{
+  while (GPS.available())
+    GPS.read();
+
+  unsigned long start = millis();
+
+  while (millis() - start < 1000)
+  {
+    if (GPS.available())
+    {
+      String line = GPS.readStringUntil('\n');
+      line.trim();
+
+      if (line.startsWith("$GP") || line.startsWith("$GN"))
+        return true;
+    }
+  }
+
+  return false;
+}
+
+void drawSensorStatus(const char *name, bool status, int y)
+{
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextSize(2);
+
+  tft.setTextColor(WHITE, BLACK);
+  tft.drawString(name, CX - 30, y);
+
+  tft.setTextColor(status ? TFT_GREEN : TFT_RED, BLACK);
+  tft.drawString(status ? "OK" : "ERROR", CX + 55, y);
+}
+
 void drawLoadingScreen()
 {
   tft.fillScreen(BLACK);
+  tft.setTextSize(2);
+
+  drawSensorStatus("MPU6050", mpuOK, 65);
+  drawSensorStatus("BMP280", bmpOK, 90);
+  drawSensorStatus("NEO-6M", gpsOK, 115);
+  drawSensorStatus("HMC5883L", magOK, 140);
 
   tft.setTextDatum(MC_DATUM);
-
   tft.setTextColor(WHITE, BLACK);
-  tft.setTextSize(2);
-
-  tft.drawString(
-    "All sensors OK",
-    CX,
-    CY - 12
-  );
-
-  tft.setTextSize(2);
-
-  tft.drawString(
-    "Calibrating...",
-    CX,
-    CY + 15
-  );
-
+  tft.drawString("Calibrating...", CX, 175);
   tft.setTextDatum(TL_DATUM);
 }
-
-
 
 // ============================================================
 // MPU WRITE
@@ -269,10 +312,10 @@ void calibrateLevel()
       float z = az / 16384.0f;
 
       float accelRoll =
-        atan2(y, z) * 180.0f / PI;
+        -atan2(y, z) * 180.0f / PI;
 
       float accelPitch =
-        atan2(
+        -atan2(
           -x,
           sqrt(y * y + z * z)
         ) * 180.0f / PI;
@@ -922,6 +965,12 @@ void setup()
   Wire.setClock(400000);
 
   // ==========================================================
+  // NEO-6M GPS
+  // ==========================================================
+
+  GPS.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+
+  // ==========================================================
   // BMP280
   // ==========================================================
 
@@ -964,6 +1013,19 @@ void setup()
   }
 
   // ==========================================================
+  // SENSOR STATUS
+  // ==========================================================
+
+  mpuOK = checkMPU();
+  gpsOK = checkGPS();
+
+  Serial.print("MPU6050: ");
+  Serial.println(mpuOK ? "OK" : "ERROR");
+
+  Serial.print("NEO-6M: ");
+  Serial.println(gpsOK ? "OK" : "ERROR");
+
+  // ==========================================================
   // TFT
   // ==========================================================
 
@@ -1001,20 +1063,20 @@ void setup()
     "8-bit 240x240 sprite created."
   );
 
-// ==========================================================
-// MPU
-// ==========================================================
+  // ==========================================================
+  // MPU
+  // ==========================================================
 
-setupMPU();
+  setupMPU();
 
-delay(200);
+  delay(200);
 
-// Loading / calibration screen
-drawLoadingScreen();
+  // Show loading screen while the MPU6050 is calibrated.
+  drawLoadingScreen();
 
-calibrateGyro();
+  calibrateGyro();
 
-calibrateLevel();
+  calibrateLevel();
 
   // ==========================================================
   // TIMER
@@ -1197,11 +1259,11 @@ void loop()
 
   roll =
     gyroRoll +
-    rollError * 0.02f;
+    rollError * 0.05f;
 
   pitch =
     gyroPitch +
-    pitchError * 0.02f;
+    pitchError * 0.05f;
 
   // ==========================================================
   // NORMALIZE ROLL
